@@ -12,11 +12,11 @@ This guide walks you through putting the **backend (FastAPI) on Render** and the
 2. **New** → **Web Service**.
 3. Connect your Git repository (GitHub/GitLab) and select the repo that contains this project.
 4. Configure the service:
-   - **Name:** e.g. `crawlmind-api`
-   - **Region:** Choose one close to your users.
-   - **Branch:** `main` (or your default branch).
-   - **Root Directory:** Leave blank if the backend lives at the repo root; otherwise set it (e.g. if backend is in a subfolder).
-   - **Runtime:** **Python 3**.
+  - **Name:** e.g. `crawlmind-api`
+  - **Region:** Choose one close to your users.
+  - **Branch:** `main` (or your default branch).
+  - **Root Directory:** Leave blank if the backend lives at the repo root; otherwise set it (e.g. if backend is in a subfolder).
+  - **Runtime:** **Python 3**.
 
 ### 1.2 Build & Start Commands
 
@@ -34,19 +34,21 @@ This guide walks you through putting the **backend (FastAPI) on Render** and the
 
 In the Render service → **Environment** tab, add:
 
-| Key | Value | Notes |
-|-----|--------|--------|
-| `OPENAI_API_KEY` | `sk-...` | Required for formatting content. |
-| `CORS_ORIGINS` | `https://your-app.netlify.app` | Your Netlify site URL (no trailing slash). Add multiple origins comma-separated if needed. |
-| `API_KEY` | (optional) | If set, clients must send `X-API-Key: <value>` on write endpoints. |
+
+| Key              | Value                          | Notes                                                                                      |
+| ---------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
+| `OPENAI_API_KEY` | `sk-...`                       | Required for formatting content.                                                           |
+| `CORS_ORIGINS`   | `https://your-app.netlify.app` | Your Netlify site URL (no trailing slash). Add multiple origins comma-separated if needed. |
+| `API_KEY`        | (optional)                     | If set, clients must send `X-API-Key: <value>` on write endpoints.                         |
+
 
 ### 1.4 Deploy
 
-Click **Create Web Service**. After the first deploy, note the service URL, e.g.:
+Click **Create Web Service**. After the first deploy, note the service URL, e.g.:`https://crawlmind-api.onrender.com`
 
 - `https://crawlmind-api.onrender.com`
 
-Use this as the backend base URL for the frontend. The frontend expects the API base to include `/api` (e.g. `https://crawlmind-api.onrender.com/api`).
+Use this as the backend base URL for the frontend. The frontend expects the API base to include `/api` (e.g. `/api`).
 
 ### 1.5 Render Notes
 
@@ -63,20 +65,15 @@ Use this as the backend base URL for the frontend. The frontend expects the API 
 The frontend currently uses a relative API path (`/api`). When the backend is on Render, the frontend must call the full Render URL.
 
 1. **Environment variable:** Set the backend base URL when building:
-   - **Key:** `VITE_API_URL`
-   - **Value:** `https://crawlmind-api.onrender.com/api` (your Render Web Service URL + `/api`; no trailing slash).
-
+  - **Key:** `VITE_API_URL`
+   - **Value:** `https://crawlmind.onrender.com/api` (or your own Render URL + `/api`). If unset, the frontend defaults to `https://crawlmind.onrender.com/api` in production builds.
 2. **Code change in the frontend:** In `frontend/src/App.jsx`, set the API base from that variable:
-   - Find the line that defines the API base, e.g.:
-     ```js
-     const API = '/api'
-     ```
-   - Replace with:
-     ```js
-     const API = import.meta.env.VITE_API_URL || '/api'
-     ```
-   - So in development (no `VITE_API_URL`) it still uses `/api` (Vite proxy); in production Netlify will have `VITE_API_URL` set to your Render URL including `/api`.
-
+  - Find the line that defines the API base, e.g.:
+  - Replace with:
+    ```js
+    const API = import.meta.env.VITE_API_URL || '/api'
+    ```
+  - So in development (no `VITE_API_URL`) it still uses `/api` (Vite proxy); in production Netlify will have `VITE_API_URL` set to your Render URL including `/api`.
 3. **Optional – API key:** If you set `API_KEY` on Render, set the same value in Netlify as `VITE_API_KEY` so the frontend can send it (e.g. in the `X-API-Key` header).
 
 ### 2.2 Deploy on Netlify
@@ -84,12 +81,12 @@ The frontend currently uses a relative API path (`/api`). When the backend is on
 1. Go to [netlify.com](https://www.netlify.com) and sign in.
 2. **Add new site** → **Import an existing project** and connect the same Git repo.
 3. Configure the build:
-   - **Base directory:** `frontend` (if the React app is in the `frontend` folder).
-   - **Build command:** `npm run build` (or `yarn build`).
-   - **Publish directory:** `dist` (Vite’s default output).
+  - **Base directory:** `frontend` (if the React app is in the `frontend` folder).
+  - **Build command:** `npm run build` (or `yarn build`).
+  - **Publish directory:** `dist` (Vite’s default output).
 4. **Environment variables** (Site settings → Environment variables):
-   - `VITE_API_URL` = `https://crawlmind-api.onrender.com/api` (your Render backend URL including `/api`).
-   - `VITE_API_KEY` = (same as Render’s `API_KEY`, if you use it).
+   - `VITE_API_URL` = `https://crawlmind.onrender.com/api` (optional; production build already defaults to this if unset).
+  - `VITE_API_KEY` = (same as Render’s `API_KEY`, if you use it).
 5. Save and deploy. Netlify will build with these variables; the built app will call your Render backend.
 
 ### 2.3 Netlify Notes
@@ -101,14 +98,16 @@ The frontend currently uses a relative API path (`/api`). When the backend is on
 
 ## 3. Checklist
 
-| Step | Backend (Render) | Frontend (Netlify) |
-|------|-------------------|---------------------|
-| 1 | Create Web Service, connect repo | Import project, connect repo |
-| 2 | Build: `pip install -r requirements.txt` | Base dir: `frontend`, build: `npm run build` |
-| 3 | Start: `gunicorn api:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT` | Publish: `dist` |
-| 4 | Set `OPENAI_API_KEY`, `CORS_ORIGINS`, optional `API_KEY` | Set `VITE_API_URL` (and optional `VITE_API_KEY`) |
-| 5 | Deploy and copy service URL | In code: `const API = import.meta.env.VITE_API_URL \|\| '/api'` |
-| 6 | Put Netlify site URL in `CORS_ORIGINS` | Deploy; test from Netlify URL; ensure `VITE_API_URL` includes `/api` |
+
+| Step | Backend (Render)                                                                 | Frontend (Netlify)                                                   |
+| ---- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 1    | Create Web Service, connect repo                                                 | Import project, connect repo                                         |
+| 2    | Build: `pip install -r requirements.txt`                                         | Base dir: `frontend`, build: `npm run build`                         |
+| 3    | Start: `gunicorn api:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT` | Publish: `dist`                                                      |
+| 4    | Set `OPENAI_API_KEY`, `CORS_ORIGINS`, optional `API_KEY`                         | Set `VITE_API_URL` (and optional `VITE_API_KEY`)                     |
+| 5    | Deploy and copy service URL                                                      | In code: `const API = import.meta.env.VITE_API_URL || '/api'`        |
+| 6    | Put Netlify site URL in `CORS_ORIGINS`                                           | Deploy; test from Netlify URL; ensure `VITE_API_URL` includes `/api` |
+
 
 ---
 

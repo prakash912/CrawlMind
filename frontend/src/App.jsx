@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react'
 
-const API = '/api'
+// Production: use VITE_API_URL if set, else crawlmind.onrender.com; local dev: /api (Vite proxy)
+const API = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://crawlmind.onrender.com/api' : '/api')
 const CARDS_PER_PAGE = 12
 const URLS_PER_PAGE = 20
 
