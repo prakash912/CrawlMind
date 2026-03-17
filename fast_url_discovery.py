@@ -131,10 +131,13 @@ def group_urls(urls: list[str]) -> dict[str, list[str]]:
 # -------------------------
 # Fetch
 # -------------------------
-async def fetch(session: aiohttp.ClientSession, url: str) -> str:
+# Discovery often runs on slower/remote servers (e.g. Render); use longer timeout there to avoid "only 1 URL"
+DISCOVERY_FETCH_TIMEOUT = 60  # seconds for sitemap/BFS discovery (production can be slow)
+
+async def fetch(session: aiohttp.ClientSession, url: str, timeout: int | float = 15) -> str:
     """Fetch URL with GET; return HTML as string, or empty string on error."""
     try:
-        async with session.get(url, headers=HEADERS, timeout=15) as response:
+        async with session.get(url, headers=HEADERS, timeout=timeout) as response:
             if response.status != 200:
                 return ""
             return await response.text()
@@ -145,10 +148,19 @@ async def fetch(session: aiohttp.ClientSession, url: str) -> str:
 # -------------------------
 # Sitemap discovery (accurate)
 # -------------------------
+async def _fetch_with_retry(session: aiohttp.ClientSession, url: str, retries: int = 2) -> str:
+    """Fetch with retries; helps on production where first request can be slow or time out."""
+    for _ in range(max(1, retries)):
+        out = await fetch(session, url, timeout=DISCOVERY_FETCH_TIMEOUT)
+        if out:
+            return out
+    return ""
+
+
 async def find_sitemaps(session: aiohttp.ClientSession, base: str) -> list[str]:
     """Get sitemap URLs from robots.txt, or fallback to base/sitemap.xml."""
     robots_url = urljoin(base, "/robots.txt")
-    text = await fetch(session, robots_url)
+    text = await _fetch_with_retry(session, robots_url)
     sitemaps = []
     for line in text.split("\n"):
         line = line.strip()
@@ -182,7 +194,7 @@ async def get_all_sitemap_urls(session: aiohttp.ClientSession, base: str) -> lis
         if url in seen_sitemaps:
             continue
         seen_sitemaps.add(url)
-        xml = await fetch(session, url)
+        xml = await _fetch_with_retry(session, url)
         if not xml or len(xml) < 10:
             continue
         locs = _extract_locs_from_xml(xml)
@@ -215,7 +227,7 @@ async def discover_urls_bfs(session: aiohttp.ClientSession, base: str, limit: in
             continue
         seen.add(url)
         found.append(url)
-        html = await fetch(session, url)
+        html = await _fetch_with_retry(session, url)
         soup = BeautifulSoup(html, "lxml")
         for link in soup.find_all("a", href=True):
             href = link["href"].strip()
