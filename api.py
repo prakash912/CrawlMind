@@ -24,18 +24,20 @@ from fast_url_discovery import (
 )
 
 # Production: set CORS_ORIGINS to your frontend URL(s), comma-separated. API_KEY = require X-API-Key on write endpoints.
-# Default includes localhost (dev) and production Netlify app so Render deploy works without env.
-_DEFAULT_CORS = "http://localhost:3000,http://127.0.0.1:3000,https://crawlmind.netlify.app"
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", _DEFAULT_CORS).strip().split(",")
+# Default includes localhost (dev) and production Netlify; regex allows any *.netlify.app (branch deploys).
+_DEFAULT_CORS = "http://localhost:3000,http://127.0.0.1:3000,https://crawlmind.netlify.app,https://crawlmind.netlify.app/"
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", _DEFAULT_CORS).strip().split(",") if o.strip()]
 API_KEY = os.getenv("API_KEY")
 
 app = FastAPI(title="CrawlMind API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in CORS_ORIGINS if o.strip()],
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=r"https://.*\.netlify\.app",  # allow any Netlify deploy (main + branches)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 

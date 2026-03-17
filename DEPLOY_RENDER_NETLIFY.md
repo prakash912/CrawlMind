@@ -53,6 +53,8 @@ Use this as the backend base URL for the frontend. The frontend expects the API 
 ### 1.5 Render Notes
 
 - **Ephemeral disk:** Render’s filesystem is not persistent. Files under `generated_docs/` are lost on restart/redeploy. For production you’d store docs in object storage (e.g. S3) or a volume; this setup is fine for trying it live.
+- **CORS:** The backend allows `https://crawlmind.netlify.app` and any `*.netlify.app` by default. If the frontend still gets a CORS error, **redeploy the backend on Render** so the latest code (with these origins) is live.
+- **Free tier cold start:** On the free tier, the service sleeps after inactivity. The **first request** can take 30–60 seconds while Render wakes the app; the browser may timeout and show a CORS or network error. **Workaround:** open `https://your-backend.onrender.com/health` in a tab, wait until it responds, then use the CrawlMind app. Or upgrade to a paid plan so the service stays awake.
 - **Free tier:** The service may spin down after inactivity; the first request can be slow (cold start).
 - **Health check:** You can set the health check path to `GET /health` if you add that route (e.g. returns 200 OK).
 
