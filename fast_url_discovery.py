@@ -20,7 +20,7 @@ from docx import Document  # python-docx: create Word documents
 
 load_dotenv()  # load .env so OPENAI_API_KEY and CRAWL_BASE_URL are available
 
-BASE_URL = os.getenv("CRAWL_BASE_URL", "https://www.aum.edu/")
+BASE_URL = os.getenv("CRAWL_BASE_URL", "")
 OUTPUT_DIR = Path("generated_docs")  # all DOCX/MD files go under this folder
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"}
 

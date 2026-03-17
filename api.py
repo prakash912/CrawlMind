@@ -48,12 +48,12 @@ def require_api_key(x_api_key: str | None = Header(None)) -> None:
 
 # Pydantic model: request body for POST /api/discover. Validates JSON and provides .base_url
 class DiscoverRequest(BaseModel):
-    base_url: str = "https://www.aum.edu/"
+    base_url: str = ""
 
 
 # Request body for POST /api/crawl (crawl all without grouping)
 class CrawlRequest(BaseModel):
-    base_url: str = "https://www.aum.edu/"
+    base_url: str = ""
 
 
 # Request body for POST /api/crawl-urls. Either urls list OR group name must be provided
@@ -99,8 +99,10 @@ def health():
 @app.post("/api/discover", dependencies=[Depends(require_api_key)])
 async def start_discover(req: DiscoverRequest, background_tasks: BackgroundTasks):
     """Discover URLs only; then user can group and crawl by group or single URL."""
+    if not (req.base_url and req.base_url.strip()):
+        raise HTTPException(status_code=400, detail="base_url is required")
     job_id = str(uuid.uuid4())[:8]   # e.g. "a1b2c3d4"
-    background_tasks.add_task(_run_discovery, job_id, req.base_url)  # run discovery after we respond
+    background_tasks.add_task(_run_discovery, job_id, req.base_url.strip())  # run discovery after we respond
     return {"job_id": job_id, "message": "Discovery started"}
 
 
@@ -108,8 +110,10 @@ async def start_discover(req: DiscoverRequest, background_tasks: BackgroundTasks
 @app.post("/api/crawl", dependencies=[Depends(require_api_key)])
 async def start_crawl(req: CrawlRequest, background_tasks: BackgroundTasks):
     """Crawl all URLs immediately (no grouping)."""
+    if not (req.base_url and req.base_url.strip()):
+        raise HTTPException(status_code=400, detail="base_url is required")
     job_id = str(uuid.uuid4())[:8]
-    background_tasks.add_task(_run_pipeline, job_id, req.base_url)
+    background_tasks.add_task(_run_pipeline, job_id, req.base_url.strip())
     return {"job_id": job_id, "message": "Crawl started in background"}
 
 

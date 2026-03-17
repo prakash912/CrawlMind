@@ -184,7 +184,7 @@ function AllUrlsList({ urls, urlStatus, jobId }) {
 }
 
 export default function App() {
-  const [baseUrl, setBaseUrl] = useState('https://www.aum.edu/')
+  const [baseUrl, setBaseUrl] = useState('')
   const [jobId, setJobId] = useState(null)
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
