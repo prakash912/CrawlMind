@@ -1,0 +1,21 @@
+# Render one-click deploy: backend only (frontend deploy on Netlify)
+# See https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: crawlmind-api
+    runtime: python
+    region: oregon  # change if needed (e.g. frankfurt)
+    plan: free
+
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn api:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT
+
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false  # set in Render dashboard
+      - key: CORS_ORIGINS
+        generateValue: false  # optional; default allows crawlmind.netlify.app
+      - key: API_KEY
+        generateValue: false  # optional; if set, frontend must send X-API-Key
+
+    healthCheckPath: /health

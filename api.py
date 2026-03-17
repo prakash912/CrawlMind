@@ -91,9 +91,15 @@ def _run_crawl_urls(
     asyncio.run(run_crawl_urls(job_id, urls, crawl_mode, max_depth, max_pages, max_links_per_page))
 
 
+@app.get("/")
+def root():
+    """Root route so Render/proxies get a valid response; health and docs links."""
+    return {"service": "CrawlMind API", "health": "/health", "docs": "/docs", "api": "/api"}
+
+
 @app.get("/health")
 def health():
-    """Production: load balancer / PaaS can use this for liveness."""
+    """Production: load balancer / Render use this for liveness. Keep fast."""
     return {"status": "ok"}
 
 

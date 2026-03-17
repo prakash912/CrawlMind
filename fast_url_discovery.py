@@ -22,7 +22,12 @@ load_dotenv()  # load .env so OPENAI_API_KEY and CRAWL_BASE_URL are available
 
 BASE_URL = os.getenv("CRAWL_BASE_URL", "")
 OUTPUT_DIR = Path("generated_docs")  # all DOCX/MD files go under this folder
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"}
+# Browser-like headers so production (e.g. Render) is less likely to get 403/blocked
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 # URLs ending with these extensions are skipped (not HTML pages)
 SKIP_EXTENSIONS = {
@@ -131,8 +136,9 @@ def group_urls(urls: list[str]) -> dict[str, list[str]]:
 # -------------------------
 # Fetch
 # -------------------------
-# Discovery often runs on slower/remote servers (e.g. Render); use longer timeout there to avoid "only 1 URL"
-DISCOVERY_FETCH_TIMEOUT = 60  # seconds for sitemap/BFS discovery (production can be slow)
+# Discovery on prod (e.g. Render) can be slow or get blocked; long timeout + retry delay
+DISCOVERY_FETCH_TIMEOUT = 90  # seconds per request
+DISCOVERY_RETRY_DELAY = 3     # seconds to wait between retries (avoids rate limit)
 
 async def fetch(session: aiohttp.ClientSession, url: str, timeout: int | float = 15) -> str:
     """Fetch URL with GET; return HTML as string, or empty string on error."""
@@ -148,9 +154,11 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int | float =
 # -------------------------
 # Sitemap discovery (accurate)
 # -------------------------
-async def _fetch_with_retry(session: aiohttp.ClientSession, url: str, retries: int = 2) -> str:
-    """Fetch with retries; helps on production where first request can be slow or time out."""
-    for _ in range(max(1, retries)):
+async def _fetch_with_retry(session: aiohttp.ClientSession, url: str, retries: int = 3) -> str:
+    """Fetch with retries and delay between; production often needs multiple tries."""
+    for attempt in range(max(1, retries)):
+        if attempt > 0:
+            await asyncio.sleep(DISCOVERY_RETRY_DELAY)
         out = await fetch(session, url, timeout=DISCOVERY_FETCH_TIMEOUT)
         if out:
             return out
@@ -158,8 +166,9 @@ async def _fetch_with_retry(session: aiohttp.ClientSession, url: str, retries: i
 
 
 async def find_sitemaps(session: aiohttp.ClientSession, base: str) -> list[str]:
-    """Get sitemap URLs from robots.txt, or fallback to base/sitemap.xml."""
-    robots_url = urljoin(base, "/robots.txt")
+    """Get sitemap URLs from robots.txt, or try common sitemap paths."""
+    base = base.rstrip("/") + "/"
+    robots_url = urljoin(base, "robots.txt")
     text = await _fetch_with_retry(session, robots_url)
     sitemaps = []
     for line in text.split("\n"):
@@ -169,7 +178,9 @@ async def find_sitemaps(session: aiohttp.ClientSession, base: str) -> list[str]:
             if url:
                 sitemaps.append(url)
     if not sitemaps:
-        sitemaps.append(urljoin(base, "/sitemap.xml"))
+        # Try common sitemap paths (sitemap.xml first); helps when robots.txt is blocked on prod
+        for path in ("sitemap-index.xml", "sitemap_index.xml", "sitemap.xml"):
+            sitemaps.append(urljoin(base, path))
     return sitemaps
 
 
@@ -663,10 +674,15 @@ async def run_discovery_only(job_id: str, base_url: str) -> None:
         "error": None,
     }
     try:
-        async with aiohttp.ClientSession() as session:
+        # Warm-up: on prod (e.g. Render) discovery can finish in 1s with 1 URL if we start before network is ready
+        await asyncio.sleep(8)
+        timeout = aiohttp.ClientTimeout(total=DISCOVERY_FETCH_TIMEOUT, connect=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             urls = await get_all_sitemap_urls(session, base_url)
+            print(f"Discovery [{job_id}]: sitemap returned {len(urls)} URLs")
             if not urls:
                 urls = await discover_urls_bfs(session, base_url, limit=500)
+                print(f"Discovery [{job_id}]: BFS fallback returned {len(urls)} URLs")
             seen = set()
             normalized_list = []
             for u in urls:
