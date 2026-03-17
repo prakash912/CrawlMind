@@ -38,7 +38,7 @@ In the Render service → **Environment** tab, add:
 | Key              | Value                          | Notes                                                                                      |
 | ---------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
 | `OPENAI_API_KEY` | `sk-...`                       | Required for formatting content.                                                           |
-| `CORS_ORIGINS`   | `https://your-app.netlify.app` | Your Netlify site URL (no trailing slash). Add multiple origins comma-separated if needed. |
+| `CORS_ORIGINS`   | (optional) | Backend defaults to `https://crawlmind.netlify.app` and localhost. Override with comma-separated origins if you use a different frontend URL. |
 | `API_KEY`        | (optional)                     | If set, clients must send `X-API-Key: <value>` on write endpoints.                         |
 
 
@@ -92,7 +92,7 @@ The frontend currently uses a relative API path (`/api`). When the backend is on
 ### 2.3 Netlify Notes
 
 - Every Git push to the linked branch can trigger a new build and deploy (if you enabled that).
-- The site URL will look like `https://<random>.netlify.app` or a custom domain you add. Use that exact URL in Render’s `CORS_ORIGINS`.
+- The site URL will look like `https://crawlmind.netlify.app` or a custom domain. The backend already allows `https://crawlmind.netlify.app` by default; for other origins set `CORS_ORIGINS` on Render.
 
 ---
 
@@ -115,7 +115,7 @@ The frontend currently uses a relative API path (`/api`). When the backend is on
 
 - **Backend URL (Render):** `https://<your-service>.onrender.com`
 - **Frontend URL (Netlify):** `https://<your-site>.netlify.app`
-- **CORS:** Render’s `CORS_ORIGINS` must include the Netlify URL.
+- **CORS:** The backend allows `https://crawlmind.netlify.app` by default; set `CORS_ORIGINS` on Render only if your frontend uses a different URL.
 - **API base in frontend:** `VITE_API_URL` must be the full Render API base, including `/api` (e.g. `https://your-service.onrender.com/api`).
 
 Once both are deployed and env vars are set, use the Netlify URL in the browser; it will talk to the Render backend and you can run discovery and crawls from the live frontend.
