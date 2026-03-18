@@ -138,15 +138,6 @@ body {
 }
 .muted { color: var(--muted); font-size: 0.9rem; margin: 0.25rem 0; }
 .error-text { color: var(--err); margin: 0.5rem 0; }
-.discovery-note {
-  font-size: 0.85rem;
-  color: var(--warn);
-  margin: 0.5rem 0;
-  padding: 0.5rem;
-  background: rgba(210, 153, 34, 0.1);
-  border-radius: 6px;
-  border-left: 3px solid var(--warn);
-}
 
 .dfs-progress {
   margin-top: 0.75rem;

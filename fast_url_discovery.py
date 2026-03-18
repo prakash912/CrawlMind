@@ -140,17 +140,10 @@ def group_urls(urls: list[str]) -> dict[str, list[str]]:
 DISCOVERY_FETCH_TIMEOUT = 90  # seconds per request
 DISCOVERY_RETRY_DELAY = 3     # seconds to wait between retries (avoids rate limit)
 
-
-def _get_proxy() -> str | None:
-    """Use HTTPS_PROXY or HTTP_PROXY so requests can go through a proxy (e.g. when target blocks server IP)."""
-    return os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
-
-
 async def fetch(session: aiohttp.ClientSession, url: str, timeout: int | float = 15) -> str:
-    """Fetch URL with GET; return HTML as string, or empty string on error. Uses HTTP(S)_PROXY if set."""
+    """Fetch URL with GET; return HTML as string, or empty string on error."""
     try:
-        proxy = _get_proxy()
-        async with session.get(url, headers=HEADERS, timeout=timeout, proxy=proxy) as response:
+        async with session.get(url, headers=HEADERS, timeout=timeout) as response:
             if response.status != 200:
                 return ""
             return await response.text()
@@ -719,15 +712,6 @@ async def run_discovery_only(job_id: str, base_url: str) -> None:
             jobs[job_id]["groups"] = groups
             jobs[job_id]["total_urls"] = len(normalized_list)
             jobs[job_id]["url_status"] = url_status
-            # When only 1 URL (usually the base), the target likely blocked this server
-            base_norm = normalize_url(base_url, base_url) or base_url.rstrip("/")
-            if len(normalized_list) <= 1 and (not normalized_list or normalized_list[0].rstrip("/") == base_norm.rstrip("/")):
-                jobs[job_id]["discovery_note"] = (
-                    "Only the base URL was found. The target site may be blocking this server (e.g. Render). "
-                    "Set HTTPS_PROXY or HTTP_PROXY on the server to use a proxy, or run the backend from a different network."
-                )
-            else:
-                jobs[job_id].pop("discovery_note", None)
     except Exception as e:
         if job_id in jobs:
             jobs[job_id]["status"] = "failed"

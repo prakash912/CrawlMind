@@ -1,7 +1,9 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react'
 
-// Production: use VITE_API_URL if set, else crawlmind.onrender.com; local dev: /api (Vite proxy)
-const API = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://crawlmind.onrender.com/api' : '/api')
+// Production: use VITE_API_URL if set, else the DigitalOcean backend; local dev: /api (Vite proxy)
+const API =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? 'https://sea-lion-app-t5omv.ondigitalocean.app/api' : '/api')
 const CARDS_PER_PAGE = 12
 const URLS_PER_PAGE = 20
 
@@ -351,11 +353,6 @@ export default function App() {
                 </>
               )}
             </div>
-          )}
-          {status.discovery_note && (
-            <p className="discovery-note" title={status.discovery_note}>
-              {status.discovery_note}
-            </p>
           )}
           {status.error && <p className="error-text">{status.error}</p>}
 
