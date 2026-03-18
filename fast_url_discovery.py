@@ -140,10 +140,17 @@ def group_urls(urls: list[str]) -> dict[str, list[str]]:
 DISCOVERY_FETCH_TIMEOUT = 90  # seconds per request
 DISCOVERY_RETRY_DELAY = 3     # seconds to wait between retries (avoids rate limit)
 
+
+def _get_proxy() -> str | None:
+    """Use HTTPS_PROXY or HTTP_PROXY so requests can go through a proxy (e.g. when target blocks server IP)."""
+    return os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
+
+
 async def fetch(session: aiohttp.ClientSession, url: str, timeout: int | float = 15) -> str:
-    """Fetch URL with GET; return HTML as string, or empty string on error."""
+    """Fetch URL with GET; return HTML as string, or empty string on error. Uses HTTP(S)_PROXY if set."""
     try:
-        async with session.get(url, headers=HEADERS, timeout=timeout) as response:
+        proxy = _get_proxy()
+        async with session.get(url, headers=HEADERS, timeout=timeout, proxy=proxy) as response:
             if response.status != 200:
                 return ""
             return await response.text()
@@ -427,6 +434,16 @@ def build_combined_md(root_url: str, sections: list[tuple[str, str]]) -> str:
 # -------------------------
 # Process one URL: crawl → format → save DOCX + MD, update url_status
 # -------------------------
+def _set_url_failed(job_id: str, url: str, reason: str) -> None:
+    """Mark a URL as failed and store reason so UI/API can show it."""
+    job = jobs.get(job_id)
+    if not job:
+        return
+    url_status = job.get("url_status") or {}
+    url_status[url] = {"status": "failed", "docx": None, "md": None, "error": reason}
+    job["url_status"] = url_status
+
+
 async def process_one_url(
     session: aiohttp.ClientSession,
     openai_client: AsyncOpenAI,
@@ -442,29 +459,34 @@ async def process_one_url(
     url_status[url] = {"status": "crawling", "docx": None, "md": None}
     job["url_status"] = url_status
 
-    html = await fetch(session, url)
+    # Use longer timeout + retry on prod so fetch from Render has time to get the page
+    html = await _fetch_with_retry(session, url)
     raw_text = html_to_text(html)
     if not raw_text or len(raw_text) < 30:
-        url_status[url] = {"status": "failed", "docx": None, "md": None}
+        _set_url_failed(job_id, url, "Page returned no or too little content (check if site blocks this server)")
         return None, None
 
-    formatted = await openai_format_content(openai_client, raw_text)
-    plain = _markdown_to_doc_text(formatted)
-    basename = url_to_safe_basename(url)
-    docx_name = basename + ".docx"
-    md_name = basename + ".md"
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_dir = OUTPUT_DIR / job_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        formatted = await openai_format_content(openai_client, raw_text)
+        plain = _markdown_to_doc_text(formatted)
+        basename = url_to_safe_basename(url)
+        docx_name = basename + ".docx"
+        md_name = basename + ".md"
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        out_dir = OUTPUT_DIR / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-    (out_dir / docx_name).write_bytes(build_single_page_docx(url, plain, base_url))
-    (out_dir / md_name).write_text(build_single_page_md(url, plain), encoding="utf-8")
+        (out_dir / docx_name).write_bytes(build_single_page_docx(url, plain, base_url))
+        (out_dir / md_name).write_text(build_single_page_md(url, plain), encoding="utf-8")
 
-    job["docs"] = job.get("docs", []) + [docx_name, md_name]
-    job["urls_done"] = job.get("urls_done", 0) + 1
-    url_status[url] = {"status": "completed", "docx": docx_name, "md": md_name}
-    job["url_status"] = url_status
-    return docx_name, md_name
+        job["docs"] = job.get("docs", []) + [docx_name, md_name]
+        job["urls_done"] = job.get("urls_done", 0) + 1
+        url_status[url] = {"status": "completed", "docx": docx_name, "md": md_name}
+        job["url_status"] = url_status
+        return docx_name, md_name
+    except Exception as e:
+        _set_url_failed(job_id, url, str(e))
+        return None, None
 
 
 def _ensure_url_status(job_id: str, urls: list[str]) -> None:
@@ -634,7 +656,7 @@ async def process_one_root_dfs(
     )
     sections = [(url, plain) for url, _d, plain in sections_with_depth]
     if not sections:
-        url_status[root_url] = {"status": "failed", "docx": None, "md": None}
+        url_status[root_url] = {"status": "failed", "docx": None, "md": None, "error": "No content from root or linked pages"}
         job["url_status"] = url_status
         job.pop("dfs_progress", None)
         return "", ""
@@ -697,6 +719,15 @@ async def run_discovery_only(job_id: str, base_url: str) -> None:
             jobs[job_id]["groups"] = groups
             jobs[job_id]["total_urls"] = len(normalized_list)
             jobs[job_id]["url_status"] = url_status
+            # When only 1 URL (usually the base), the target likely blocked this server
+            base_norm = normalize_url(base_url, base_url) or base_url.rstrip("/")
+            if len(normalized_list) <= 1 and (not normalized_list or normalized_list[0].rstrip("/") == base_norm.rstrip("/")):
+                jobs[job_id]["discovery_note"] = (
+                    "Only the base URL was found. The target site may be blocking this server (e.g. Render). "
+                    "Set HTTPS_PROXY or HTTP_PROXY on the server to use a proxy, or run the backend from a different network."
+                )
+            else:
+                jobs[job_id].pop("discovery_note", None)
     except Exception as e:
         if job_id in jobs:
             jobs[job_id]["status"] = "failed"

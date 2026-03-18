@@ -116,6 +116,7 @@ function GroupModal({ groupName, urls, urlStatus, jobId, onCrawlGroup, onCrawlOn
               <li key={url} className="modal-url-item">
                 <span className="modal-url-text" title={url}>{url}</span>
                 <span className="modal-url-status">{st.status}</span>
+                {st.status === 'failed' && st.error && <span className="modal-url-error" title={st.error}>{st.error}</span>}
                 <span className="modal-url-actions">
                   {completed ? (
                     <>
@@ -156,12 +157,14 @@ function AllUrlsList({ urls, urlStatus, jobId }) {
       </p>
       <ul className="all-urls-list">
         {pageUrls.map((url) => {
-          const st = urlStatus[url] || { status: 'pending', docx: null, md: null }
+          const st = urlStatus[url] || { status: 'pending', docx: null, md: null, error: null }
           const completed = st.status === 'completed'
+          const failed = st.status === 'failed'
           return (
             <li key={url} className="all-urls-item">
               <span className="all-urls-text" title={url}>{url}</span>
               <span className="all-urls-status">{st.status}</span>
+              {failed && st.error && <span className="all-urls-error" title={st.error}>{st.error}</span>}
               {completed && (
                 <span className="all-urls-dl">
                   <a href={downloadUrl(jobId, st.docx)} download={st.docx} className="btn-doc">DOCX</a>
@@ -348,6 +351,11 @@ export default function App() {
                 </>
               )}
             </div>
+          )}
+          {status.discovery_note && (
+            <p className="discovery-note" title={status.discovery_note}>
+              {status.discovery_note}
+            </p>
           )}
           {status.error && <p className="error-text">{status.error}</p>}
 

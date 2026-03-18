@@ -179,6 +179,7 @@ async def get_status(job_id: str):
         "docs": j.get("docs", []),
         "error": j.get("error"),
         "dfs_progress": j.get("dfs_progress"),
+        "discovery_note": j.get("discovery_note"),
     }
 
 

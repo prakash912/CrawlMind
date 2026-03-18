@@ -79,3 +79,8 @@ python fast_url_discovery.py
 ```
 
 Generated DOCX files are written under `generated_docs/{job_id}/`.
+
+## Deployment (Render + Netlify)
+
+- Backend: build with `pip install -r requirements.txt`, start with `gunicorn api:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT`. Set `OPENAI_API_KEY` (and optionally `API_KEY`, `CORS_ORIGINS`) in the dashboard.
+- If on **production** you see **only 1 URL discovered** and **crawl fails**, it is often a deployment/target issue (the target site blocking or throttling the host’s IP). See **[DEPLOYMENT_ISSUES.md](DEPLOYMENT_ISSUES.md)** for causes and how to verify by testing with `https://example.com`.
