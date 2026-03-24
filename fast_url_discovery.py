@@ -321,6 +321,74 @@ def _strip_doc_noise(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
+def _normalize_readable_text(text: str) -> str:
+    """Deterministic cleanup for stable, human-readable document text."""
+    if not text:
+        return ""
+    lines = [ln.strip() for ln in text.splitlines()]
+    out: list[str] = []
+    seen_compact: set[str] = set()
+    heading_alias = {
+        "overview": "Overview",
+        "program overview": "Program Overview",
+        "description": "Program Description",
+        "program description": "Program Description",
+        "highlights": "Program Highlights",
+        "learning outcomes": "Learning Outcomes",
+        "outcomes": "Learning Outcomes",
+        "requirements": "Requirements",
+        "admissions": "Admissions",
+        "fees": "Fees and Costs",
+        "costs": "Fees and Costs",
+        "faq": "FAQs",
+        "faqs": "FAQs",
+    }
+
+    def _is_heading(s: str) -> bool:
+        if not s or len(s) > 80 or s.endswith("."):
+            return False
+        if re.match(r"^[A-Z][A-Za-z0-9/&()\- ,]{2,}$", s):
+            return True
+        return s.lower().strip(":") in heading_alias
+
+    for ln in lines:
+        if not ln:
+            out.append("")
+            continue
+
+        compact = re.sub(r"\s+", " ", ln).strip().lower()
+        if compact in seen_compact and len(compact) > 20:
+            continue
+        seen_compact.add(compact)
+
+        key = ln.lower().strip(":")
+        if key in heading_alias:
+            out.append(heading_alias[key])
+            out.append("")
+            continue
+
+        if re.match(r"^[-*•]\s+", ln):
+            ln = "• " + re.sub(r"^[-*•]\s+", "", ln).strip()
+        elif re.match(r"^\d+\.\s+", ln):
+            ln = "• " + re.sub(r"^\d+\.\s+", "", ln).strip()
+
+        if ":" in ln and len(ln) < 140:
+            k, v = ln.split(":", 1)
+            if len(k.strip()) <= 40:
+                ln = f"{k.strip()}: {v.strip()}"
+
+        if _is_heading(ln):
+            out.append(ln.strip(":"))
+            out.append("")
+            continue
+
+        out.append(ln)
+
+    text_out = "\n".join(out)
+    text_out = re.sub(r"[ \t]+\n", "\n", text_out)
+    return re.sub(r"\n{3,}", "\n\n", text_out).strip()
+
+
 async def openai_format_content(client: AsyncOpenAI, raw_text: str) -> str:
     """Send raw text to OpenAI; return LLM-ready Markdown (with clear headings/lists)."""
     if not raw_text or len(raw_text) < 50:
@@ -328,13 +396,14 @@ async def openai_format_content(client: AsyncOpenAI, raw_text: str) -> str:
     chunk_size = 12000
     chunks = [raw_text[i : i + chunk_size] for i in range(0, len(raw_text), chunk_size)]
     formatted_parts = []
-    prompt = """Format this web content into LLM-ready Markdown. Only format — do not add new facts or change meaning.
+    prompt = """Format this web content into clear, consistent Markdown for both human DOCX and LLM-ready MD. Only format — do not add new facts or change meaning.
 - Output a short YAML front matter at top (`title`, `summary`, `source_url` if available, `key_topics`).
 - Use Markdown headings: `#` title, then `##` sections and `###` subsections when needed.
 - Use concise bullet lists (`- item`) and numbered steps (`1.`) where appropriate.
 - Keep key facts, numbers, names, and URLs intact.
 - Remove UI clutter/noise: page numbers, cookie/nav/footer text, [Learn More], Apply now, Read more, Click here.
 - Keep paragraphs readable and compact; remove duplication.
+- Keep section order stable when possible: Overview, Program Description, Key Facts, Requirements, FAQs, Contact/Links.
 - Do NOT output HTML.
 
 Content:
@@ -344,7 +413,7 @@ Content:
             r = await client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt + chunk}],
-                temperature=0.2,
+                temperature=0.0,
             )
             formatted_parts.append(r.choices[0].message.content or chunk)
         except Exception:
@@ -524,7 +593,7 @@ def build_combined_docx(root_url: str, sections: list[tuple[str, str]], base_url
     doc.add_paragraph(f"Generated: {datetime.utcnow().isoformat()}Z")
     doc.add_paragraph("")
     for url, markdown_text in sections:
-        plain_text = _strip_doc_noise(_markdown_to_doc_text(markdown_text))
+        plain_text = _normalize_readable_text(_strip_doc_noise(_markdown_to_doc_text(markdown_text)))
         doc.add_heading(f"Section: {url}", level=1)
         _render_doc_blocks(doc, plain_text)
         doc.add_paragraph("")
@@ -592,7 +661,7 @@ async def process_one_url(
 
     try:
         formatted = await openai_format_content(openai_client, raw_text)
-        plain = _strip_doc_noise(_markdown_to_doc_text(formatted))
+        plain = _normalize_readable_text(_strip_doc_noise(_markdown_to_doc_text(formatted)))
         basename = url_to_safe_basename(url)
         docx_name = basename + ".docx"
         md_name = basename + ".md"
