@@ -1,0 +1,13 @@
+{
+  "name": "crawlmind-dev-runner",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "./venv/bin/python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000",
+    "dev:frontend": "npm run dev --prefix frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

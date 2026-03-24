@@ -285,7 +285,7 @@ def html_to_text(html: str) -> str:
         tag.decompose()
     text = soup.get_text(separator="\n")
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines))[:100000]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines))[:1000000]
 
 
 # -------------------------
@@ -396,14 +396,24 @@ async def openai_format_content(client: AsyncOpenAI, raw_text: str) -> str:
     chunk_size = 12000
     chunks = [raw_text[i : i + chunk_size] for i in range(0, len(raw_text), chunk_size)]
     formatted_parts = []
-    prompt = """Format this web content into clear, consistent Markdown for both human DOCX and LLM-ready MD. Only format — do not add new facts or change meaning.
-- Output a short YAML front matter at top (`title`, `summary`, `source_url` if available, `key_topics`).
-- Use Markdown headings: `#` title, then `##` sections and `###` subsections when needed.
-- Use concise bullet lists (`- item`) and numbered steps (`1.`) where appropriate.
-- Keep key facts, numbers, names, and URLs intact.
+    prompt = """Format this web content into clean, highly readable Markdown for BOTH human DOCX and LLM use. Only format — do not add facts or change meaning.
+
+ADAPTIVE STRUCTURE (important):
+- Every page is different, so do NOT force a fixed template.
+- Preserve the source meaning and natural section flow.
+- Use headings/lists/tables only where they actually fit the source content.
+
+OUTPUT RULES:
+- Include short YAML front matter at top: `title`, `summary`, `source_url` (if available), `key_topics`.
+- Use one clear `#` title, then `##`/`###` headings based on actual topic shifts.
+- Keep key facts, numbers, dates, names, and URLs exactly accurate.
 - Remove UI clutter/noise: page numbers, cookie/nav/footer text, [Learn More], Apply now, Read more, Click here.
-- Keep paragraphs readable and compact; remove duplication.
-- Keep section order stable when possible: Overview, Program Description, Key Facts, Requirements, FAQs, Contact/Links.
+- De-duplicate repeated lines/paragraphs.
+- Keep paragraphs compact and clear.
+- Use bullets for options/features/criteria.
+- Use numbered lists for steps/processes.
+- If tabular data exists, render as markdown table (`| Field | Value |`).
+- If data is not tabular, do NOT force a table.
 - Do NOT output HTML.
 
 Content:
@@ -464,6 +474,21 @@ def _markdown_to_doc_text(text: str) -> str:
         # Drop YAML frontmatter separators
         if normalized == "---":
             continue
+        # Convert markdown table rows to readable key-value lines for DOCX text rendering.
+        # Example: | Field | Value | -> Field: Value
+        if normalized.startswith("|") and normalized.endswith("|"):
+            cells = [c.strip() for c in normalized.strip("|").split("|")]
+            if len(cells) >= 2:
+                # Skip separator row like |---|---|
+                if all(re.match(r"^:?-{2,}:?$", c) for c in cells):
+                    continue
+                key = cells[0]
+                val = " | ".join(cells[1:]).strip()
+                if val.lower() in {"null", "none", "n/a", "na", "unknown", "-"}:
+                    continue
+                if key and val:
+                    out.append(f"{key}: {val}")
+                    continue
         if re.match(r"^[-*_]{2,}\s*$", line):
             out.append("")
             continue
@@ -472,6 +497,8 @@ def _markdown_to_doc_text(text: str) -> str:
         if m_yaml:
             key = m_yaml.group(1).replace("_", " ").strip().title()
             val = m_yaml.group(2).strip()
+            if val.lower() in {"null", "none", "n/a", "na", "unknown", "-"}:
+                continue
             if val:
                 out.append(f"{key}: {val}")
             else:
