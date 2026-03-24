@@ -24,13 +24,23 @@ async function discover(baseUrl) {
   return res.json()
 }
 
+async function crawlSingle(url) {
+  const res = await fetch(`${API}/crawl-single`, {
+    method: 'POST',
+    headers: apiHeaders(),
+    body: JSON.stringify({ url }),
+  })
+  if (!res.ok) throw new Error('Failed to start single URL crawl')
+  return res.json()
+}
+
 async function getStatus(jobId) {
   const res = await fetch(`${API}/status/${jobId}`)
   if (!res.ok) throw new Error('Failed to get status')
   return res.json()
 }
 
-async function crawlUrls(jobId, { urls, group }, crawlMode = 'bfs', maxDepth = 1, maxPages = 200, maxLinksPerPage = 20) {
+async function crawlUrls(jobId, { urls, group }, crawlMode = 'bfs', maxDepth = 1, maxPages = 200, maxLinksPerPage = 20, combineIntoOneDoc = false) {
   const body = {
     job_id: jobId,
     urls: urls || undefined,
@@ -39,6 +49,7 @@ async function crawlUrls(jobId, { urls, group }, crawlMode = 'bfs', maxDepth = 1
     max_depth: maxDepth,
     max_pages: maxPages,
     max_links_per_page: maxLinksPerPage,
+    combine_into_one_doc: !!combineIntoOneDoc,
   }
   const res = await fetch(`${API}/crawl-urls`, {
     method: 'POST',
@@ -189,7 +200,9 @@ function AllUrlsList({ urls, urlStatus, jobId }) {
 }
 
 export default function App() {
+  const [inputMode, setInputMode] = useState('discover') // discover | single
   const [baseUrl, setBaseUrl] = useState('')
+  const [singleUrl, setSingleUrl] = useState('')
   const [jobId, setJobId] = useState(null)
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
@@ -201,6 +214,7 @@ export default function App() {
   const [maxDepth, setMaxDepth] = useState(1)
   const [maxPages, setMaxPages] = useState(200)
   const [maxLinksPerPage, setMaxLinksPerPage] = useState(20)
+  const [combineIntoOneDoc, setCombineIntoOneDoc] = useState(false)
   const [urlSearch, setUrlSearch] = useState('')
   const pollRef = useRef(null)
 
@@ -251,16 +265,36 @@ export default function App() {
     }
   }
 
+  const startSingleCrawl = async () => {
+    setError(null)
+    setStatus(null)
+    setJobId(null)
+    setModalGroup(null)
+    setShowGroupView(false)
+    setUrlSearch('')
+    setLoading(true)
+    try {
+      const { job_id } = await crawlSingle(singleUrl.trim())
+      setJobId(job_id)
+      setStatus({ status: 'crawling', job_id })
+      await poll(job_id)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleCrawlGroup = useCallback(
     async (groupName) => {
       try {
-        await crawlUrls(jobId, { group: groupName }, crawlMode, maxDepth, maxPages, maxLinksPerPage)
+        await crawlUrls(jobId, { group: groupName }, crawlMode, maxDepth, maxPages, maxLinksPerPage, combineIntoOneDoc)
         await poll(jobId)
       } catch (e) {
         setError(e.message)
       }
     },
-    [jobId, poll, crawlMode, maxDepth, maxPages, maxLinksPerPage]
+    [jobId, poll, crawlMode, maxDepth, maxPages, maxLinksPerPage, combineIntoOneDoc]
   )
 
   const handleCrawlOne = useCallback(
@@ -278,12 +312,12 @@ export default function App() {
   const handleCrawlAll = useCallback(async () => {
     if (!status?.urls?.length) return
     try {
-      await crawlUrls(jobId, { urls: status.urls }, crawlMode, maxDepth, maxPages, maxLinksPerPage)
+      await crawlUrls(jobId, { urls: status.urls }, crawlMode, maxDepth, maxPages, maxLinksPerPage, combineIntoOneDoc)
       await poll(jobId)
     } catch (e) {
       setError(e.message)
     }
-  }, [jobId, status?.urls, poll, crawlMode, maxDepth, maxPages, maxLinksPerPage])
+  }, [jobId, status?.urls, poll, crawlMode, maxDepth, maxPages, maxLinksPerPage, combineIntoOneDoc])
 
   const groups = status?.groups ? Object.entries(status.groups) : []
   const totalPages = Math.max(1, Math.ceil(groups.length / CARDS_PER_PAGE))
@@ -306,18 +340,58 @@ export default function App() {
       </header>
 
       <section className="card form-card">
-        <label>
-          <span>Base URL</span>
-          <input
-            type="url"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://example.com/"
-          />
-        </label>
-        <button onClick={startDiscover} disabled={loading}>
-          {loading ? 'Discovering…' : 'Discover URLs'}
-        </button>
+        <div className="input-mode-switch" role="tablist" aria-label="Crawl input mode">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={inputMode === 'discover'}
+            className={`input-mode-tab ${inputMode === 'discover' ? 'active' : ''}`}
+            onClick={() => setInputMode('discover')}
+          >
+            Discover + Crawl
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={inputMode === 'single'}
+            className={`input-mode-tab ${inputMode === 'single' ? 'active' : ''}`}
+            onClick={() => setInputMode('single')}
+          >
+            Quick Single URL Crawl
+          </button>
+        </div>
+
+        {inputMode === 'discover' ? (
+          <>
+            <label>
+              <span>Base URL</span>
+              <input
+                type="url"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="https://example.com/"
+              />
+            </label>
+            <button onClick={startDiscover} disabled={loading || !baseUrl.trim()}>
+              {loading ? 'Discovering…' : 'Discover URLs'}
+            </button>
+          </>
+        ) : (
+          <>
+            <label>
+              <span>Single URL (No Discovery)</span>
+              <input
+                type="url"
+                value={singleUrl}
+                onChange={(e) => setSingleUrl(e.target.value)}
+                placeholder="https://example.com/page"
+              />
+            </label>
+            <button onClick={startSingleCrawl} disabled={loading || !singleUrl.trim()}>
+              {loading ? 'Starting…' : 'Crawl Single URL Fast'}
+            </button>
+          </>
+        )}
       </section>
 
       {error && (
@@ -385,12 +459,29 @@ export default function App() {
                   </div>
                 )}
               </div>
+              <div className="crawl-combine-option">
+                <input
+                  id="combine-into-one-doc"
+                  type="checkbox"
+                  checked={combineIntoOneDoc}
+                  disabled={crawlMode === 'dfs'}
+                  onChange={(e) => setCombineIntoOneDoc(e.target.checked)}
+                  className={crawlMode === 'dfs' ? 'disabled' : ''}
+                />
+                <label
+                  htmlFor="combine-into-one-doc"
+                  className={`combine-label ${crawlMode === 'dfs' ? 'disabled' : ''}`}
+                  title={crawlMode === 'dfs' ? 'Combine option is for BFS only' : ''}
+                >
+                  Combine all into one document (single combined.docx + .md)
+                </label>
+              </div>
               <div className="discovered-actions">
                 <button type="button" className="btn-group" onClick={() => setShowGroupView(true)}>
                   Group URL
                 </button>
-                <button type="button" className="btn-crawl-all" onClick={handleCrawlAll}>
-                  Crawl all (one by one)
+                <button type="button" className="btn-crawl-all" onClick={(e) => { e.stopPropagation(); handleCrawlAll() }}>
+                  {combineIntoOneDoc ? 'Crawl all (into one doc)' : 'Crawl all (one by one)'}
                 </button>
               </div>
             </>

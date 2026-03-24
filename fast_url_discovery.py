@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup  # parse HTML and XML (sitemaps)
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from docx import Document  # python-docx: create Word documents
+from docx.shared import Pt
 
 load_dotenv()  # load .env so OPENAI_API_KEY and CRAWL_BASE_URL are available
 
@@ -222,6 +223,29 @@ async def get_all_sitemap_urls(session: aiohttp.ClientSession, base: str) -> lis
 
 
 # -------------------------
+# Fallback: discover links from base page (single-page/DFS-style)
+# -------------------------
+async def discover_urls_from_page(session: aiohttp.ClientSession, base: str, limit: int = 500) -> list[str]:
+    """Fetch base page and extract same-domain links from that page only."""
+    base_normalized = base.rstrip("/") + "/"
+    fetch_url = base_normalized
+    html = await _fetch_with_retry(session, fetch_url)
+    links = extract_internal_links(html, base_normalized, fetch_url)
+    seen: set[str] = set()
+    out: list[str] = []
+    root = normalize_url(fetch_url, base_normalized) or fetch_url
+    if root not in seen:
+        seen.add(root)
+        out.append(root)
+    for u in links:
+        n = normalize_url(u, base_normalized)
+        if n and n not in seen and len(out) < limit:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+# -------------------------
 # Fallback: BFS discovery with normalized URLs
 # -------------------------
 async def discover_urls_bfs(session: aiohttp.ClientSession, base: str, limit: int = 1000) -> list[str]:
@@ -253,7 +277,7 @@ async def discover_urls_bfs(session: aiohttp.ClientSession, base: str, limit: in
 # Extract clean text from HTML
 # -------------------------
 def html_to_text(html: str) -> str:
-    """Remove scripts/nav/footer, get plain text from body. Max 50k chars."""
+    """Remove scripts/nav/footer, get plain text from body. Max 100k chars."""
     if not html or len(html) < 50:
         return ""
     soup = BeautifulSoup(html, "lxml")
@@ -261,24 +285,57 @@ def html_to_text(html: str) -> str:
         tag.decompose()
     text = soup.get_text(separator="\n")
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines))[:50000]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines))[:100000]
 
 
 # -------------------------
-# OpenAI: format only
+# OpenAI/doc cleaning
 # -------------------------
+DOC_NOISE_LINE_PATTERN = re.compile(
+    r"^(page\s*\d+|-\s*-\s*\d+\s+of\s+\d+\s*-\s*-|"
+    r"\[?\s*learn\s+more\s*\]?|\[?\s*apply\s+now\s*\]?|apply\s+today|"
+    r"read\s+more|click\s+here|submit|request\s+info|get\s+started|"
+    r"next\s*page|previous\s*page|back\s+to\s+top|^\d+\s*$)$",
+    re.I,
+)
+
+
+def _strip_doc_noise(text: str) -> str:
+    """Remove page numbers, button text, and CTA noise from final document text."""
+    if not text:
+        return ""
+    lines: list[str] = []
+    for line in text.split("\n"):
+        s = line.strip()
+        if not s:
+            lines.append("")
+            continue
+        if DOC_NOISE_LINE_PATTERN.search(s):
+            continue
+        s = re.sub(r"\s*\[\s*learn\s+more\s*\]\s*$", "", s, flags=re.I)
+        s = re.sub(r"\s*\[\s*apply\s+now\s*\]\s*$", "", s, flags=re.I)
+        s = re.sub(r"\s*apply\s+now\s*\.?\s*$", "", s, flags=re.I)
+        s = re.sub(r"\s*learn\s+more\s*\.?\s*$", "", s, flags=re.I)
+        if s.strip():
+            lines.append(s)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 async def openai_format_content(client: AsyncOpenAI, raw_text: str) -> str:
-    """Send raw text to OpenAI; get back formatted/cleaned text (structure, headings, lists)."""
+    """Send raw text to OpenAI; return LLM-ready Markdown (with clear headings/lists)."""
     if not raw_text or len(raw_text) < 50:
         return raw_text
     chunk_size = 12000
     chunks = [raw_text[i : i + chunk_size] for i in range(0, len(raw_text), chunk_size)]
     formatted_parts = []
-    prompt = """Format this web content for a clean document. Only format — do not add new facts or change meaning.
-- Preserve headings and structure; use clear heading levels.
-- Fix broken sentences and list formatting.
-- Remove redundant blanks and noise.
-- Keep paragraphs and lists readable.
+    prompt = """Format this web content into LLM-ready Markdown. Only format — do not add new facts or change meaning.
+- Output a short YAML front matter at top (`title`, `summary`, `source_url` if available, `key_topics`).
+- Use Markdown headings: `#` title, then `##` sections and `###` subsections when needed.
+- Use concise bullet lists (`- item`) and numbered steps (`1.`) where appropriate.
+- Keep key facts, numbers, names, and URLs intact.
+- Remove UI clutter/noise: page numbers, cookie/nav/footer text, [Learn More], Apply now, Read more, Click here.
+- Keep paragraphs readable and compact; remove duplication.
+- Do NOT output HTML.
 
 Content:
 """
@@ -300,19 +357,14 @@ Content:
 # -------------------------
 def build_single_page_docx(url: str, plain_text: str, base_url: str) -> bytes:
     """Build DOCX from plain document text (no markdown). Returns file as bytes."""
+    plain_text = _strip_doc_noise(plain_text)
     doc = Document()
+    _style_doc_for_readability(doc)
     doc.add_heading(url, level=0)
-    doc.add_paragraph(f"Source: {url}")
+    doc.add_paragraph(f"Program URL: {url}")
     doc.add_paragraph(f"Generated: {datetime.utcnow().isoformat()}Z")
     doc.add_paragraph("")
-    for block in plain_text.split("\n\n"):
-        block = block.strip()
-        if not block:
-            continue
-        if len(block) < 120 and not block.endswith("."):
-            doc.add_heading(block, level=2)
-        else:
-            doc.add_paragraph(block)
+    _render_doc_blocks(doc, plain_text)
     buf = BytesIO()
     doc.save(buf)
     buf.seek(0)
@@ -320,19 +372,44 @@ def build_single_page_docx(url: str, plain_text: str, base_url: str) -> bytes:
 
 
 def _markdown_to_doc_text(text: str) -> str:
-    """Convert markdown-style content to plain document text (no #, **, ---, etc.)."""
+    """Convert markdown/yaml-style content to plain document text for DOCX."""
     if not text:
         return ""
     out = []
+    in_fence = False
     for line in text.split("\n"):
         line = line.strip()
         if not line:
             out.append("")
             continue
+        # Normalize smart quotes around fence markers from model outputs
+        normalized = line.strip().strip('"').strip("'").strip("“”")
+        lower_norm = normalized.lower()
+
+        # Drop markdown/code fences (```yaml ... ```), including quoted variants
+        if "```" in normalized or normalized.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence and lower_norm in ("yaml", "yml", "markdown", "md"):
+            continue
+        # Drop YAML frontmatter separators
+        if normalized == "---":
+            continue
         if re.match(r"^[-*_]{2,}\s*$", line):
             out.append("")
             continue
-        line = re.sub(r"^#+\s*", "", line).strip()
+        # YAML key: value -> Human readable Key: value
+        m_yaml = re.match(r"^([a-zA-Z0-9_ -]+):\s*(.*)$", normalized)
+        if m_yaml:
+            key = m_yaml.group(1).replace("_", " ").strip().title()
+            val = m_yaml.group(2).strip()
+            if val:
+                out.append(f"{key}: {val}")
+            else:
+                # key_topics: -> Key Topics
+                out.append(key)
+            continue
+        line = re.sub(r"^#+\s*", "", normalized).strip()
         line = line.replace("**", "").replace("__", "")
         line = re.sub(r"\*([^*]+)\*", r"\1", line)
         line = re.sub(r"_([^_]+)_", r"\1", line)
@@ -343,21 +420,78 @@ def _markdown_to_doc_text(text: str) -> str:
         line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
         line = re.sub(r"`([^`]+)`", r"\1", line)
         out.append(line)
-    return "\n".join(out)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
-def build_single_page_md(url: str, plain_text: str) -> str:
-    """Build document-style text file (header + body). Content is plain, not markdown syntax."""
-    body = plain_text
-    header = [
-        url,
-        "",
-        "Source: " + url,
-        "Generated: " + datetime.utcnow().isoformat() + "Z",
-        "",
-        "",
-    ]
-    return "\n".join(header) + body
+def _style_doc_for_readability(doc: Document) -> None:
+    """Apply readable typography and spacing for humans."""
+    normal = doc.styles["Normal"]
+    normal.font.name = "Calibri"
+    normal.font.size = Pt(11)
+    normal.paragraph_format.space_after = Pt(8)
+    normal.paragraph_format.line_spacing = 1.15
+
+    for name, size in (("Heading 1", 16), ("Heading 2", 14), ("Heading 3", 12)):
+        if name in doc.styles:
+            doc.styles[name].font.name = "Calibri"
+            doc.styles[name].font.size = Pt(size)
+
+
+def _render_doc_blocks(doc: Document, text: str) -> None:
+    """Render blocks with better heading/list/paragraph readability."""
+    if not text:
+        return
+    for block in text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        if "\n" in block:
+            for ln in [x.strip() for x in block.splitlines() if x.strip()]:
+                if ln.startswith("•") or re.match(r"^[-*]\s+", ln):
+                    txt = re.sub(r"^([•]|[-*])\s*", "", ln).strip()
+                    try:
+                        doc.add_paragraph(txt, style="List Bullet")
+                    except Exception:
+                        doc.add_paragraph(f"• {txt}")
+                elif re.match(r"^\d+\.\s+", ln):
+                    txt = re.sub(r"^\d+\.\s+", "", ln).strip()
+                    try:
+                        doc.add_paragraph(txt, style="List Number")
+                    except Exception:
+                        doc.add_paragraph(ln)
+                else:
+                    doc.add_paragraph(ln)
+            continue
+
+        if ":" in block and len(block) < 140:
+            key, val = block.split(":", 1)
+            if key and len(key.strip()) < 40:
+                p = doc.add_paragraph()
+                p.add_run(key.strip() + ": ").bold = True
+                p.add_run(val.strip())
+                continue
+
+        if len(block) < 120 and not block.endswith("."):
+            level = 1 if len(block) < 60 else 2
+            doc.add_heading(block, level=level)
+        else:
+            doc.add_paragraph(block)
+
+
+def build_single_page_md(url: str, markdown_text: str) -> str:
+    """Build LLM-ready Markdown output. Keeps markdown structure and prepends metadata front matter."""
+    body = _strip_doc_noise(markdown_text).strip()
+    if not body.startswith("---"):
+        meta = [
+            "---",
+            f'source_url: "{url}"',
+            f'generated_at: "{datetime.utcnow().isoformat()}Z"',
+            "format: llm_ready_markdown",
+            "---",
+            "",
+        ]
+        body = "\n".join(meta) + body
+    return body
 
 
 # -------------------------
@@ -384,20 +518,15 @@ def extract_internal_links(html: str, base_url: str, current_url: str) -> list[s
 def build_combined_docx(root_url: str, sections: list[tuple[str, str]], base_url: str) -> bytes:
     """One DOCX: root URL as title, then Section per (url, plain_text)."""
     doc = Document()
+    _style_doc_for_readability(doc)
     doc.add_heading(root_url, level=0)
-    doc.add_paragraph(f"DFS combined document — Root: {root_url}")
+    doc.add_paragraph(f"Source: {base_url.rstrip('/') or root_url}")
     doc.add_paragraph(f"Generated: {datetime.utcnow().isoformat()}Z")
     doc.add_paragraph("")
-    for url, plain_text in sections:
+    for url, markdown_text in sections:
+        plain_text = _strip_doc_noise(_markdown_to_doc_text(markdown_text))
         doc.add_heading(f"Section: {url}", level=1)
-        for block in plain_text.split("\n\n"):
-            block = block.strip()
-            if not block:
-                continue
-            if len(block) < 120 and not block.endswith("."):
-                doc.add_heading(block, level=2)
-            else:
-                doc.add_paragraph(block)
+        _render_doc_blocks(doc, plain_text)
         doc.add_paragraph("")
     buf = BytesIO()
     doc.save(buf)
@@ -406,19 +535,21 @@ def build_combined_docx(root_url: str, sections: list[tuple[str, str]], base_url
 
 
 def build_combined_md(root_url: str, sections: list[tuple[str, str]]) -> str:
-    """One MD: root URL as title, then Section per (url, plain_text)."""
+    """One LLM-ready MD: root metadata + markdown section per URL."""
     lines = [
-        root_url,
+        "---",
+        f'source_root: "{root_url}"',
+        f'generated_at: "{datetime.utcnow().isoformat()}Z"',
+        "format: llm_ready_markdown",
+        "---",
         "",
-        f"DFS combined document — Root: {root_url}",
-        f"Generated: {datetime.utcnow().isoformat()}Z",
-        "",
+        "# Combined Crawl Document",
         "",
     ]
-    for url, plain_text in sections:
-        lines.append(f"Section: {url}")
+    for url, markdown_text in sections:
+        lines.append(f"## Source URL: {url}")
         lines.append("")
-        lines.append(plain_text)
+        lines.append(_strip_doc_noise(markdown_text))
         lines.append("")
         lines.append("")
     return "\n".join(lines)
@@ -461,7 +592,7 @@ async def process_one_url(
 
     try:
         formatted = await openai_format_content(openai_client, raw_text)
-        plain = _markdown_to_doc_text(formatted)
+        plain = _strip_doc_noise(_markdown_to_doc_text(formatted))
         basename = url_to_safe_basename(url)
         docx_name = basename + ".docx"
         md_name = basename + ".md"
@@ -470,7 +601,7 @@ async def process_one_url(
         out_dir.mkdir(parents=True, exist_ok=True)
 
         (out_dir / docx_name).write_bytes(build_single_page_docx(url, plain, base_url))
-        (out_dir / md_name).write_text(build_single_page_md(url, plain), encoding="utf-8")
+        (out_dir / md_name).write_text(build_single_page_md(url, formatted), encoding="utf-8")
 
         job["docs"] = job.get("docs", []) + [docx_name, md_name]
         job["urls_done"] = job.get("urls_done", 0) + 1
@@ -598,8 +729,7 @@ async def dfs_crawl_root(
         if not raw_text or len(raw_text) < 30:
             continue
         formatted = await openai_format_content(openai_client, raw_text)
-        plain = _markdown_to_doc_text(formatted)
-        sections.append((url, depth, plain))
+        sections.append((url, depth, formatted))
         _update_progress(url)
 
         if depth < max_depth and len(visited) < max_pages:
@@ -695,7 +825,14 @@ async def run_discovery_only(job_id: str, base_url: str) -> None:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             urls = await get_all_sitemap_urls(session, base_url)
             print(f"Discovery [{job_id}]: sitemap returned {len(urls)} URLs")
-            if not urls:
+            base_no_slash = base_url.rstrip("/")
+            only_base = not urls or (
+                len(urls) == 1 and (normalize_url(urls[0], base_url) or "").rstrip("/") == base_no_slash
+            )
+            if only_base:
+                urls = await discover_urls_from_page(session, base_url, limit=500)
+                print(f"Discovery [{job_id}]: no sitemap/robots — DFS from page returned {len(urls)} URLs")
+            elif not urls:
                 urls = await discover_urls_bfs(session, base_url, limit=500)
                 print(f"Discovery [{job_id}]: BFS fallback returned {len(urls)} URLs")
             seen = set()
@@ -719,6 +856,52 @@ async def run_discovery_only(job_id: str, base_url: str) -> None:
 
 
 # -------------------------
+# Crawl all selected URLs into one combined DOCX + MD
+# -------------------------
+async def run_crawl_urls_combined(job_id: str, urls: list[str], base_url: str) -> None:
+    """Crawl selected URLs and generate one combined.docx + combined.md."""
+    job = jobs.get(job_id)
+    if not job or job.get("status") != "discovered":
+        return
+    _ensure_url_status(job_id, urls)
+    job["status"] = "crawling"
+    sections: list[tuple[str, str]] = []
+    try:
+        async with aiohttp.ClientSession() as session:
+            openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            for url in urls:
+                url_status = job.get("url_status") or {}
+                url_status[url] = {"status": "crawling", "docx": None, "md": None}
+                job["url_status"] = url_status
+                html = await _fetch_with_retry(session, url)
+                raw_text = html_to_text(html)
+                if not raw_text or len(raw_text) < 30:
+                    _set_url_failed(job_id, url, "Page returned no or too little content")
+                    continue
+                try:
+                    formatted = await openai_format_content(openai_client, raw_text)
+                    sections.append((url, formatted))
+                    job["urls_done"] = job.get("urls_done", 0) + 1
+                    url_status[url] = {"status": "completed", "docx": "combined.docx", "md": "combined.md"}
+                    job["url_status"] = url_status
+                except Exception as e:
+                    _set_url_failed(job_id, url, str(e))
+        if sections:
+            title = "Combined document — " + (base_url.rstrip("/") or "crawl")
+            out_dir = OUTPUT_DIR / job_id
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "combined.docx").write_bytes(build_combined_docx(title, sections, base_url))
+            (out_dir / "combined.md").write_text(build_combined_md(title, sections), encoding="utf-8")
+            job["docs"] = job.get("docs", []) + ["combined.docx", "combined.md"]
+    except Exception as e:
+        if job_id in jobs:
+            jobs[job_id]["error"] = str(e)
+    finally:
+        if job_id in jobs:
+            jobs[job_id]["status"] = "discovered"
+
+
+# -------------------------
 # Crawl a list of URLs: BFS (one doc per URL) or DFS (one combined doc per root)
 # -------------------------
 async def run_crawl_urls(
@@ -728,6 +911,7 @@ async def run_crawl_urls(
     max_depth: int = 1,
     max_pages: int = 200,
     max_links_per_page: int = 20,
+    combine_into_one_doc: bool = False,
 ) -> None:
     """
     BFS (default): crawl only the selected URLs, one DOCX + MD per URL (no link traversal).
@@ -740,6 +924,9 @@ async def run_crawl_urls(
     _ensure_url_status(job_id, urls)
     job["status"] = "crawling"
     try:
+        if combine_into_one_doc and crawl_mode == "bfs":
+            await run_crawl_urls_combined(job_id, urls, base_url)
+            return
         async with aiohttp.ClientSession() as session:
             openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             if crawl_mode == "dfs":
@@ -789,7 +976,13 @@ async def run_crawl_pipeline(job_id: str, base_url: str) -> None:
         async with aiohttp.ClientSession() as session:
             jobs[job_id]["status"] = "discovering"
             urls = await get_all_sitemap_urls(session, base_url)
-            if not urls:
+            base_no_slash = base_url.rstrip("/")
+            only_base = not urls or (
+                len(urls) == 1 and (normalize_url(urls[0], base_url) or "").rstrip("/") == base_no_slash
+            )
+            if only_base:
+                urls = await discover_urls_from_page(session, base_url, limit=500)
+            elif not urls:
                 urls = await discover_urls_bfs(session, base_url, limit=500)
             seen = set()
             normalized_list = []
@@ -826,7 +1019,13 @@ async def main_save_urls_only() -> None:
     base = BASE_URL.rstrip("/") + "/"
     async with aiohttp.ClientSession() as session:
         urls = await get_all_sitemap_urls(session, base)
-        if not urls:
+        base_no_slash = base.rstrip("/")
+        only_base = not urls or (
+            len(urls) == 1 and (normalize_url(urls[0], base) or "").rstrip("/") == base_no_slash
+        )
+        if only_base:
+            urls = await discover_urls_from_page(session, base, limit=500)
+        elif not urls:
             urls = await discover_urls_bfs(session, base, limit=500)
         seen = set()
         normalized = []

@@ -5,6 +5,7 @@ import asyncio
 import os
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Header, Depends
 # CORS: allow the React frontend (different port) to call this API from the browser
@@ -58,6 +59,11 @@ class CrawlRequest(BaseModel):
     base_url: str = ""
 
 
+# Request body for POST /api/crawl-single (fast path: crawl exactly one URL)
+class CrawlSingleRequest(BaseModel):
+    url: str = ""
+
+
 # Request body for POST /api/crawl-urls. Either urls list OR group name must be provided
 class CrawlUrlsRequest(BaseModel):
     job_id: str
@@ -67,6 +73,7 @@ class CrawlUrlsRequest(BaseModel):
     max_depth: int = 1             # for DFS: 0=root only, 1=root+links, 2=root+links+links of links
     max_pages: int = 200            # for DFS: safety limit on total pages per root
     max_links_per_page: int = 20    # for DFS: max links to follow per page
+    combine_into_one_doc: bool = False  # BFS only: merge all selected URLs into one combined.docx + .md
 
 
 # Sync wrapper: run the async run_discovery_only in a new event loop (needed for BackgroundTasks)
@@ -79,6 +86,40 @@ def _run_pipeline(job_id: str, base_url: str) -> None:
     asyncio.run(run_crawl_pipeline(job_id, base_url))
 
 
+def _run_crawl_single(job_id: str, url: str) -> None:
+    """Create a one-URL discovered job and crawl it immediately (BFS single URL)."""
+    clean_url = (url or "").strip()
+    p = urlparse(clean_url)
+    if not p.scheme or not p.netloc:
+        jobs[job_id] = {
+            "status": "failed",
+            "base_url": clean_url,
+            "total_urls": 0,
+            "urls": [],
+            "groups": {},
+            "url_status": {},
+            "urls_done": 0,
+            "docs": [],
+            "error": "Invalid URL",
+        }
+        return
+    base_url = f"{p.scheme}://{p.netloc}/"
+    jobs[job_id] = {
+        "status": "discovered",
+        "base_url": base_url,
+        "total_urls": 1,
+        "urls": [clean_url],
+        "groups": {"single": [clean_url]},
+        "url_status": {clean_url: {"status": "pending", "docx": None, "md": None}},
+        "urls_done": 0,
+        "docs": [],
+        "error": None,
+    }
+    asyncio.run(run_crawl_urls(job_id, [clean_url], "bfs", 1, 50, 10, False))
+    if job_id in jobs and not jobs[job_id].get("error"):
+        jobs[job_id]["status"] = "completed"
+
+
 # Sync wrapper: run crawl for a specific list of URLs (with optional mode/depth/limits)
 def _run_crawl_urls(
     job_id: str,
@@ -87,8 +128,9 @@ def _run_crawl_urls(
     max_depth: int = 1,
     max_pages: int = 200,
     max_links_per_page: int = 20,
+    combine_into_one_doc: bool = False,
 ) -> None:
-    asyncio.run(run_crawl_urls(job_id, urls, crawl_mode, max_depth, max_pages, max_links_per_page))
+    asyncio.run(run_crawl_urls(job_id, urls, crawl_mode, max_depth, max_pages, max_links_per_page, combine_into_one_doc))
 
 
 @app.get("/")
@@ -125,6 +167,17 @@ async def start_crawl(req: CrawlRequest, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "message": "Crawl started in background"}
 
 
+# POST /api/crawl-single — crawl only one given URL (no discovery), fast path
+@app.post("/api/crawl-single", dependencies=[Depends(require_api_key)])
+async def start_crawl_single(req: CrawlSingleRequest, background_tasks: BackgroundTasks):
+    """Fast crawl for one URL only (skip discovery/grouping)."""
+    if not (req.url and req.url.strip()):
+        raise HTTPException(status_code=400, detail="url is required")
+    job_id = str(uuid.uuid4())[:8]
+    background_tasks.add_task(_run_crawl_single, job_id, req.url.strip())
+    return {"job_id": job_id, "message": "Single URL crawl started"}
+
+
 # POST /api/crawl-urls — crawl specific URLs or a group (job must already be in "discovered" state)
 @app.post("/api/crawl-urls", dependencies=[Depends(require_api_key)])
 async def crawl_urls(req: CrawlUrlsRequest, background_tasks: BackgroundTasks):
@@ -148,6 +201,7 @@ async def crawl_urls(req: CrawlUrlsRequest, background_tasks: BackgroundTasks):
     max_depth = max(0, min(int(req.max_depth) if req.max_depth is not None else 1, 5))
     max_pages = max(10, min(int(req.max_pages) if req.max_pages is not None else 200, 500))
     max_links_per_page = max(5, min(int(req.max_links_per_page) if req.max_links_per_page is not None else 20, 50))
+    combine = bool(req.combine_into_one_doc)
     background_tasks.add_task(
         _run_crawl_urls,
         req.job_id,
@@ -156,8 +210,9 @@ async def crawl_urls(req: CrawlUrlsRequest, background_tasks: BackgroundTasks):
         max_depth,
         max_pages,
         max_links_per_page,
+        combine,
     )
-    return {"message": "Crawl started", "count": len(urls), "crawl_mode": crawl_mode, "max_depth": max_depth}
+    return {"message": "Crawl started", "count": len(urls), "crawl_mode": crawl_mode, "max_depth": max_depth, "combine_into_one_doc": combine}
 
 
 # GET /api/status/{job_id} — return full job state for polling (status, urls, groups, url_status, docs)

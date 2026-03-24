@@ -6,8 +6,9 @@ Crawl a site with accurate URL discovery, then crawl and generate **one DOCX per
 
 - **Accurate URL discovery**: Sitemap (with full recursion) or BFS fallback; URLs are normalized (same domain, no fragments), filtered (no .pdf/.xml/assets etc.), and deduped.
 - **One doc per URL**: Each page gets its own Word document; the filename is derived from the URL path (e.g. `about_us.docx`, `programs_mba.docx`).
+- **Combine all option**: Crawl selected URLs and merge into one `combined.docx` + `combined.md`.
 - **One-by-one pipeline**: For each URL: crawl → extract text → OpenAI format → write DOCX, then move to the next (sequential).
-- **OpenAI formatting**: Raw crawl text is sent to GPT for formatting only (structure, headings, readability).
+- **OpenAI formatting** (optional): Raw crawl text can be sent to GPT for formatting only. Set `USE_OPENAI_FORMAT=false` in `.env` to use **Python-only** cleaning (no API key needed): main content via **trafilatura**, boilerplate filtered, same DOCX/MD output.
 - **React UI**: Start a crawl by URL, watch status (pages done), download DOCX files.
 
 ## Setup
@@ -21,13 +22,9 @@ source venv/bin/activate   # or venv\Scripts\activate on Windows
 pip3 install -r requirements.txt
 ```
 
-Create a `.env` file with:
+Create a `.env` file. For **Python-only** (no API cost): set `USE_OPENAI_FORMAT=false` and omit the key. For OpenAI formatting: set `OPENAI_API_KEY=sk-...`.
 
-```
-OPENAI_API_KEY=sk-...
-```
-
-Optional: `CRAWL_BASE_URL=https://example.com/` (default used when running the script directly).
+Optional: `CRAWL_BASE_URL=https://example.com/` (default used when running the script directly). See **ACCURATE_CRAWL_AND_DOCS.md** for accurate crawl and doc options.
 
 ### Frontend (React + Vite)
 
@@ -87,3 +84,9 @@ python fast_url_discovery.py
 ```
 
 Generated DOCX files are written under `generated_docs/{job_id}/`.
+
+## Backend documentation (full)
+
+See `BACKEND_COMPLETE_GUIDE.md` for complete backend explanation.
+
+For presentation/viva prep, see `BACKEND_PRESENTATION_QA.md`.
